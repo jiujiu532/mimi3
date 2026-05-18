@@ -369,6 +369,13 @@ class AccountManager:
     async def run_lifecycle(self):
         """核心流转逻辑"""
         while True:
+            # 检查账号文件是否还存在，被删除则退出线程
+            user_file = os.path.join(ROOT_DIR, "users", f"user_{self.uid}.json")
+            if not os.path.exists(user_file):
+                self.logger.info(f"账号文件已被删除，退出生命周期管理。")
+                _account_rebuild_events.pop(self.uid, None)
+                return
+
             self.logger.info("=== 启动新一轮 Claw 生命周期 (设定运行阈值 55 分钟) ===")
             client = NativeClawClient(self.ph, self.cookies, self.logger)
             try:
