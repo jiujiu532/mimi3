@@ -30,6 +30,10 @@ cat > .env << 'EOF'
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8000
 
+# [重要] Claw 节点连接的 WebSocket 桥接地址
+# 必须设置为你的公网域名或IP，Claw 内网的 bridge 脚本通过此地址连回网关
+WS_TUNNEL_URL=ws://your-domain.com:8000/ws
+
 # 本机 OpenAI 兼容 /v1 的 Bearer 密钥（客户端 api_key）；不设则不对中转鉴权
 # MIMO_RELAY_OPENAI_KEY=sk-your-random-secret-here
 
