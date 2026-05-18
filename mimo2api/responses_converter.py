@@ -148,6 +148,15 @@ def _parse_response_input_item(raw_item: Any) -> RespItem | None:
             output=_stringify_tool_payload(raw_item.get("output", raw_item.get("content"))),
         )
 
+    # 兼容没有 type 字段但有 role 的消息项（如 {"role": "user", "content": ...}）
+    if "role" in raw_item:
+        item = dict(raw_item)
+        if "type" not in item:
+            item["type"] = "message"
+        if item.get("content") is None:
+            item["content"] = []
+        return RespMessageItem.model_validate(item)
+
     return None
 
 
