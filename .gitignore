@@ -21,3 +21,10 @@ archive/http_captures/
 .ai_memory/
 .vscodestatus_page/
 status_page/
+
+# Docker
+logs/
+
+# IDE
+.vscode/
+.idea/

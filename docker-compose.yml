@@ -1,0 +1,14 @@
+services:
+  mimi3:
+    build: .
+    image: ghcr.io/jiujiu532/mimi3:latest
+    container_name: mimi3
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./users:/app/users
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    environment:
+      - TZ=Asia/Shanghai
