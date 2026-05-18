@@ -399,16 +399,25 @@
         <div class="glass-card">
             <div class="flex-between">
                 <h2 style="margin: 0; font-size: 18px;">Claw 运行账号管理</h2>
-                <button class="btn" onclick="openModal()">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                    导入凭证
-                </button>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn btn-outline" onclick="rebuildSelected()" id="rebuildSelectedBtn" style="display:none;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                        重建勾选
+                    </button>
+                    <button class="btn" onclick="openModal()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        导入凭证
+                    </button>
+                </div>
             </div>
             
             <div class="table-wrapper">
                 <table id="usersTable">
                     <thead>
                         <tr>
+                            <th style="width:40px;text-align:center;">
+                                <input type="checkbox" id="selectAll" onchange="toggleSelectAll()" title="全选/反选">
+                            </th>
                             <th>用户 ID (User ID)</th>
                             <th>备注名</th>
                             <th>实例状态 / 剩余时长</th>
@@ -417,7 +426,7 @@
                         </tr>
                     </thead>
                     <tbody id="usersBody">
-                        <tr><td colspan="5" class="empty-state">加载中...</td></tr>
+                        <tr><td colspan="6" class="empty-state">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -541,6 +550,7 @@
                 if (data.users && data.users.length > 0) {
                     tbody.innerHTML = data.users.map(u => `
                         <tr>
+                            <td style="text-align:center;"><input type="checkbox" class="user-checkbox" value="${u.userId}" onchange="updateRebuildBtn()"></td>
                             <td><strong style="color:var(--primary)">${u.userId}</strong></td>
                             <td>${u.name || '(未命名)'}</td>
                             <td>
@@ -559,8 +569,9 @@
                             </td>
                         </tr>
                     `).join('');
+                    updateRebuildBtn();
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">当前未加载任何凭证</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前未加载任何凭证</td></tr>';
                 }
             } catch(e) {
                 if (e.message !== 'UNAUTHORIZED') {
@@ -582,6 +593,38 @@
             } catch(e) {
                 showToast('网络请求异常', 'error');
             }
+        }
+
+        function toggleSelectAll() {
+            const checked = document.getElementById('selectAll').checked;
+            document.querySelectorAll('.user-checkbox').forEach(cb => cb.checked = checked);
+            updateRebuildBtn();
+        }
+
+        function updateRebuildBtn() {
+            const checked = document.querySelectorAll('.user-checkbox:checked');
+            const btn = document.getElementById('rebuildSelectedBtn');
+            btn.style.display = checked.length > 0 ? 'inline-flex' : 'none';
+        }
+
+        async function rebuildSelected() {
+            const checked = document.querySelectorAll('.user-checkbox:checked');
+            if (checked.length === 0) return;
+            const uids = Array.from(checked).map(cb => cb.value);
+            if (!confirm(`确定要重建以下 ${uids.length} 个账号的容器？\n${uids.join(', ')}`)) return;
+            
+            let success = 0, fail = 0;
+            for (const uid of uids) {
+                try {
+                    const res = await apiFetch(`/api/rebuild/${uid}`, {method: 'POST'});
+                    if (res.ok) success++;
+                    else fail++;
+                } catch(e) { fail++; }
+            }
+            showToast(`重建信号已发送: ${success} 成功, ${fail} 失败`);
+            document.getElementById('selectAll').checked = false;
+            document.querySelectorAll('.user-checkbox').forEach(cb => cb.checked = false);
+            updateRebuildBtn();
         }
 
         function openModal() {
