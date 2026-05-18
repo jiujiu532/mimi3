@@ -801,9 +801,14 @@ async def responses_handler(request: Request):
                     record_request_finished(route_key=route_key, status_code=502, started_at=request_started_at, first_byte_at=first_byte_at, success=False)
                     return JSONResponse({"error": {"message": "上游返回了非法 JSON"}}, status_code=502)
 
-                responses_resp = responses_convert_response(chat_resp)
-                record_request_finished(route_key=route_key, status_code=status_code, started_at=request_started_at, first_byte_at=first_byte_at, success=True, usage=chat_resp.get("usage"))
-                return JSONResponse(content=responses_resp)
+                if use_responses_format:
+                    responses_resp = responses_convert_response(chat_resp)
+                    record_request_finished(route_key=route_key, status_code=status_code, started_at=request_started_at, first_byte_at=first_byte_at, success=True, usage=chat_resp.get("usage"))
+                    return JSONResponse(content=responses_resp)
+                else:
+                    # 兼容模式：直接返回 chat completions JSON
+                    record_request_finished(route_key=route_key, status_code=status_code, started_at=request_started_at, first_byte_at=first_byte_at, success=True, usage=chat_resp.get("usage"))
+                    return JSONResponse(content=chat_resp)
 
         except asyncio.TimeoutError:
             retry_state.status_code = 504
