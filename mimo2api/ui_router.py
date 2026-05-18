@@ -18,6 +18,7 @@ from .auth import (
     webui_cookie_secure,
 )
 from .gateway_state import state
+from .manager import trigger_rebuild_single
 
 router = APIRouter()
 
@@ -181,5 +182,7 @@ async def api_users_delete(uid: str):
     target_file = os.path.join(USERS_DIR, f"user_{uid}.json")
     if os.path.exists(target_file):
         os.remove(target_file)
+        # 触发重建信号打断 sleep，让 Manager 线程立刻检测到文件已删除并退出
+        trigger_rebuild_single(uid)
         return JSONResponse({"status": "ok"})
     return JSONResponse({"detail": "User not found"}, status_code=404)
