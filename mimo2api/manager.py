@@ -209,7 +209,6 @@ class NativeClawClient:
             r = await client.post(url_create, cookies=self.cookies, headers=_aistudio_headers(), timeout=20)
             if r.status_code == 401:
                 self.logger.error("账户已过期失效 (Create 401)，停止重试，请重新导入 cookie")
-                self.expired = True
                 return False
             
             # 3. 轮询直到 AVAILABLE
@@ -219,7 +218,6 @@ class NativeClawClient:
                 sr = await client.get(url_status, cookies=self.cookies, headers=_aistudio_headers(), timeout=15)
                 if sr.status_code == 401:
                     self.logger.error("账户已过期失效 (Status 401)，停止重试，请重新导入 cookie")
-                    self.expired = True
                     return False
                 try:
                     d = sr.json()
@@ -228,16 +226,13 @@ class NativeClawClient:
                         self.logger.info(f"Claw 创建状态: {st}")
                         last_status = st
                     if st == "AVAILABLE":
-                        self.consecutive_failures = 0  # 重置失败计数
                         return True
                     if st in ("FAILED", "DESTROYED", "ERROR", "CREATE_FAILED"):
                         self.logger.error(f"创建失败，状态进入: {st}")
-                        self.consecutive_failures += 1
                         return False
                 except Exception:
                     pass
                 await asyncio.sleep(2)
-        self.consecutive_failures += 1
         return False
 
     async def _get_ticket(self) -> str:
