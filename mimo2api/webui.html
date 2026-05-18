@@ -433,6 +433,19 @@
         </div>
     </div>
 
+    <!-- 代理池配置 -->
+    <div class="card">
+        <div class="flex-between" style="margin-bottom: 12px;">
+            <h2 style="margin: 0; font-size: 18px;">代理池配置</h2>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="proxyInput" class="form-control" placeholder="http://user:pass@ip:port (留空则不使用代理)" style="flex:1; margin:0;">
+            <button class="btn" onclick="saveProxy()">保存</button>
+            <button class="btn btn-outline" onclick="testProxy()">测试连通</button>
+        </div>
+        <div id="proxyStatus" style="margin-top: 8px; font-size: 12px; color: var(--text-muted);"></div>
+    </div>
+
     <!-- Manager 日志窗口 -->
     <div class="card" id="logCard" style="display:none;">
         <div class="flex-between" style="margin-bottom: 12px;">
@@ -697,6 +710,59 @@
             return div.innerHTML;
         }
 
+        // ===== 代理池配置 =====
+        async function loadProxy() {
+            try {
+                const res = await apiFetch('/api/proxy');
+                const data = await res.json();
+                document.getElementById('proxyInput').value = data.proxy_url || '';
+            } catch(e) {}
+        }
+
+        async function saveProxy() {
+            const url = document.getElementById('proxyInput').value.trim();
+            try {
+                const res = await apiFetch('/api/proxy', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({proxy_url: url})
+                });
+                if (res.ok) {
+                    showToast(url ? '代理已保存' : '代理已清除（直连模式）');
+                    document.getElementById('proxyStatus').textContent = '';
+                } else {
+                    showToast('保存失败', 'error');
+                }
+            } catch(e) {
+                showToast('网络异常', 'error');
+            }
+        }
+
+        async function testProxy() {
+            const url = document.getElementById('proxyInput').value.trim();
+            const statusEl = document.getElementById('proxyStatus');
+            statusEl.textContent = '测试中...';
+            statusEl.style.color = 'var(--text-muted)';
+            try {
+                const res = await apiFetch('/api/proxy/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({proxy_url: url})
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    statusEl.textContent = '✅ ' + data.message;
+                    statusEl.style.color = '#10B981';
+                } else {
+                    statusEl.textContent = '❌ ' + (data.error || '连接失败');
+                    statusEl.style.color = '#EF4444';
+                }
+            } catch(e) {
+                statusEl.textContent = '❌ 请求异常: ' + e.message;
+                statusEl.style.color = '#EF4444';
+            }
+        }
+
         function openModal() {
             document.getElementById('cookieInput').value = '';
             document.getElementById('importModal').classList.add('active');
@@ -778,7 +844,7 @@
         }
 
         async function initializeDashboard() {
-            await Promise.all([fetchStatus(), fetchUsers()]);
+            await Promise.all([fetchStatus(), fetchUsers(), loadProxy()]);
             startStatusPolling();
         }
 

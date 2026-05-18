@@ -18,7 +18,7 @@ from pathlib import Path
 MODEL_MAPPING_FILE = Path(__file__).parent.parent / "model_mapping.json"
 
 # 引入 Manager 长驻协程任务
-from .manager import start_manager_tasks, trigger_rebuild, trigger_rebuild_single, hot_reload_account
+from .manager import start_manager_tasks, trigger_rebuild, trigger_rebuild_single, hot_reload_account, get_proxy_url, set_proxy_url
 
 # Responses API 转换器
 from .responses_converter import convert_request as responses_convert_request
@@ -281,6 +281,40 @@ async def api_manager_logs(limit: int = 100):
     limit = max(1, min(limit, 200))
     logs = list(state.manager_logs)[-limit:]
     return JSONResponse(content={"count": len(logs), "logs": logs})
+
+@app.get("/api/proxy")
+async def api_get_proxy():
+    return JSONResponse(content={"proxy_url": get_proxy_url()})
+
+@app.put("/api/proxy")
+async def api_set_proxy(request: Request):
+    body = await request.body()
+    try:
+        data = json.loads(body.decode("utf-8", "ignore"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    url = data.get("proxy_url", "")
+    set_proxy_url(url)
+    return JSONResponse(content={"ok": True, "proxy_url": get_proxy_url()})
+
+@app.post("/api/proxy/test")
+async def api_test_proxy(request: Request):
+    """测试代理是否能连通小米 AI Studio"""
+    body = await request.body()
+    try:
+        data = json.loads(body.decode("utf-8", "ignore"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        data = {}
+    proxy_url = data.get("proxy_url", get_proxy_url())
+    if not proxy_url:
+        return JSONResponse({"ok": False, "error": "未配置代理地址"}, status_code=400)
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(proxy=proxy_url, timeout=15) as client:
+            r = await client.get("https://aistudio.xiaomimimo.com/open-apis/user/mimo-claw/status")
+            return JSONResponse(content={"ok": True, "status_code": r.status_code, "message": f"连通成功 (HTTP {r.status_code})"})
+    except Exception as e:
+        return JSONResponse(content={"ok": False, "error": str(e)})
 
 def load_model_mapping() -> dict[str, str]:
     if not MODEL_MAPPING_FILE.exists():

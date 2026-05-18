@@ -91,6 +91,25 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_URL = "https://aistudio.xiaomimimo.com"
 WS_URL = "wss://aistudio.xiaomimimo.com/ws/proxy"
 
+# 代理池配置
+PROXY_URL = os.getenv("MIMO_PROXY_URL", "")  # http://user:pass@ip:port
+
+def get_proxy_url() -> str:
+    """获取当前代理 URL（支持运行时修改）"""
+    return PROXY_URL
+
+def set_proxy_url(url: str):
+    """运行时更新代理 URL"""
+    global PROXY_URL
+    PROXY_URL = url.strip()
+
+def _httpx_proxy_kwargs() -> dict:
+    """返回 httpx 代理参数"""
+    proxy = get_proxy_url()
+    if proxy:
+        return {"proxy": proxy}
+    return {}
+
 # ----------------- 用户加载逻辑 (遵循 web_core.py 原版逻辑) -----------------
 def load_all_users() -> dict:
     """从 users/ 目录读取所有用户的登录凭证"""
@@ -158,7 +177,7 @@ class NativeClawClient:
         c_copy = dict(self.cookies)
         c_copy['xiaomichatbot_ph'] = self.ph
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(**_httpx_proxy_kwargs()) as client:
                 r = await client.post(url, cookies=c_copy, headers=_aistudio_headers(), timeout=30)
                 data = r.json()
                 if data.get("code") == 0:
@@ -179,7 +198,7 @@ class NativeClawClient:
         url_status = f"{BASE_URL}/open-apis/user/mimo-claw/status"
         url_agree = f"{BASE_URL}/open-apis/agreement/user/mimo-claw?xiaomichatbot_ph={quote(self.ph)}"
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(**_httpx_proxy_kwargs()) as client:
             # 1. 尝试签署 agreement
             try:
                 await client.post(url_agree, cookies=self.cookies, headers=_aistudio_headers(), timeout=15)
@@ -224,7 +243,7 @@ class NativeClawClient:
     async def _get_ticket(self) -> str:
         """获取建立 ws 需要的 ticket"""
         url = f"{BASE_URL}/open-apis/user/ws/ticket?xiaomichatbot_ph={quote(self.ph)}"
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(**_httpx_proxy_kwargs()) as client:
             for attempt in range(5):
                 r = await client.get(url, cookies=self.cookies, headers=_aistudio_headers(), timeout=15)
                 if r.status_code == 200:
@@ -377,7 +396,7 @@ class AccountManager:
         """获取当前容器的状态和剩余时间(秒)"""
         url = f"{BASE_URL}/open-apis/user/mimo-claw/status"
         try:
-            async with httpx.AsyncClient() as c:
+            async with httpx.AsyncClient(**_httpx_proxy_kwargs()) as c:
                 r = await c.get(url, cookies=self.cookies, headers=_aistudio_headers(), timeout=15)
                 if r.status_code == 401:
                     self.logger.error("账户已过期失效 (Status 401)，停止重试")
