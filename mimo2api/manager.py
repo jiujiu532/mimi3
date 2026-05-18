@@ -402,19 +402,6 @@ class AccountManager:
                 # 重新导入后 hot_reload 会取消本线程，这里只是兜底
                 continue
 
-            # CREATE_FAILED 退避策略：连续失败越多，等待越久
-            if self.consecutive_failures > 0:
-                backoff = min(self.consecutive_failures * 60, 30 * 60)  # 每次多等1分钟，最多30分钟
-                self.logger.warning(f"⏳ 连续创建失败 {self.consecutive_failures} 次，退避等待 {backoff // 60} 分钟后重试...")
-                await interruptible_sleep(backoff, self.uid)
-                account_evt = _account_rebuild_events.get(self.uid)
-                if account_evt and account_evt.is_set():
-                    account_evt.clear()
-                    self.consecutive_failures = 0  # 手动重建时重置计数
-                if rebuild_event.is_set():
-                    rebuild_event.clear()
-                    self.consecutive_failures = 0
-
             self.logger.info("=== 启动新一轮 Claw 生命周期 (设定运行阈值 55 分钟) ===")
             client = NativeClawClient(self.ph, self.cookies, self.logger)
             try:
@@ -438,6 +425,9 @@ class AccountManager:
                         reply = await client.send_message(inject_prompt, timeout=120)
                         self.logger.info(f"[复用容器注入网关反馈]: {reply}")
                         await client.close()
+                        
+                        # 成功复用，重置失败计数
+                        self.consecutive_failures = 0
                         
                         wait_time = remain_sec - 120
                         if self.is_first_round and self.stagger_offset > 0:
@@ -507,6 +497,9 @@ class AccountManager:
                 
                 reply2 = await client.send_message(inject_prompt, timeout=180)
                 self.logger.info(f"[桥接脚本运行反馈]: {reply2}")
+
+                # 成功注入，重置失败计数
+                self.consecutive_failures = 0
 
                 # 6. 此刻服务会去连接 public gateway websocket，本地挂起 55分钟
                 wait_time = 55 * 60
