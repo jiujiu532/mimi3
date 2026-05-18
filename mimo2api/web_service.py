@@ -676,9 +676,11 @@ async def responses_handler(request: Request):
                 return Response(raw_body, status_code=status_code, media_type=content_type, headers=response_headers)
 
             if is_streaming:
-                converter = ResponsesStreamConverter(model=model)
+                # 兼容层：直接透传上游 chat completions SSE 流
+                # 大多数客户端（Cherry Studio/Chatbox 等）不支持 Responses API 的 SSE 事件格式
+                # 直接返回 chat completions 格式的 SSE，所有客户端都能正常解析
 
-                async def responses_stream_generator(current_req_id, current_queue):
+                async def responses_compat_stream_generator(current_req_id, current_queue):
                     last_data_time = time.monotonic()
                     stream_succeeded = False
                     data_task = asyncio.ensure_future(current_queue.get())
@@ -706,27 +708,27 @@ async def responses_handler(request: Request):
                             msg = done.pop().result()
                             if msg.get("type") == "finish":
                                 stream_succeeded = True
-                                for evt in converter.finalize():
-                                    yield evt.encode("utf-8")
+                                yield b"data: [DONE]\n\n"
                                 break
                             elif msg.get("type") == "error":
-                                err_evt = f"event: error\ndata: {json.dumps({'type': 'error', 'message': msg.get('body')})}\n\n"
-                                yield err_evt.encode("utf-8")
+                                err_data = json.dumps({"error": {"message": msg.get("body", "unknown error")}})
+                                yield f"data: {err_data}\n\n".encode("utf-8")
                                 break
                             elif msg.get("type") == "chunk":
-                                for line in msg.get("body", "").split("\n"):
-                                    for evt in converter.process_chunk(line):
-                                        yield evt.encode("utf-8")
+                                body = msg.get("body", "")
+                                if body:
+                                    yield body.encode("utf-8")
+                                    if not body.endswith("\n"):
+                                        yield b"\n"
                     finally:
                         data_task.cancel()
                         keepalive_task.cancel()
                         await asyncio.gather(data_task, keepalive_task, return_exceptions=True)
                         cleanup_pending_request(current_req_id)
-                        usage_obj = getattr(converter, "_usage", None)
-                        record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded, usage=usage_obj.model_dump() if usage_obj else None)
+                        record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded)
 
                 return StreamingResponse(
-                    responses_stream_generator(req_id, queue),
+                    responses_compat_stream_generator(req_id, queue),
                     status_code=status_code,
                     media_type="text/event-stream",
                     headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
