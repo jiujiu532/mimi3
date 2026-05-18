@@ -23,16 +23,37 @@ import websockets
 # 手动重建信号
 rebuild_event = asyncio.Event()
 
-async def interruptible_sleep(seconds: int):
-    """可被 rebuild_event 打断的 sleep"""
+# 单账号重建信号：uid -> asyncio.Event
+_account_rebuild_events: dict[str, asyncio.Event] = {}
+
+async def interruptible_sleep(seconds: int, uid: str = ""):
+    """可被全局 rebuild_event 或单账号重建信号打断的 sleep"""
+    events = [rebuild_event.wait()]
+    account_event = _account_rebuild_events.get(uid)
+    if account_event:
+        events.append(account_event.wait())
     try:
-        await asyncio.wait_for(rebuild_event.wait(), timeout=seconds)
+        done, pending = await asyncio.wait(
+            [asyncio.ensure_future(e) for e in events],
+            timeout=seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for p in pending:
+            p.cancel()
     except asyncio.TimeoutError:
         pass
 
 def trigger_rebuild():
     """供外部调用，触发所有账号强制重建"""
     rebuild_event.set()
+
+def trigger_rebuild_single(uid: str) -> bool:
+    """触发单个账号强制重建，返回是否找到该账号"""
+    event = _account_rebuild_events.get(uid)
+    if event:
+        event.set()
+        return True
+    return False
 
 # 配置日志格式
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(name)s] - %(levelname)s - %(message)s")
@@ -313,6 +334,8 @@ class AccountManager:
         self.logger = logging.getLogger(f"Acc-{self.name}")
         self.stagger_offset = stagger_offset
         self.is_first_round = True
+        # 注册单账号重建信号
+        _account_rebuild_events[self.uid] = asyncio.Event()
 
     async def get_instance_status(self) -> tuple[str, int]:
         """获取当前容器的状态和剩余时间(秒)"""
@@ -375,10 +398,14 @@ class AccountManager:
                             wait_time = max(60, wait_time - self.stagger_offset)
                             self.is_first_round = False
                         self.logger.info(f"容器直接复用成功！等待休眠 {wait_time} 秒直至其快过期时再触发完整的强制重建...")
-                        await interruptible_sleep(wait_time)
+                        await interruptible_sleep(wait_time, self.uid)
                         if rebuild_event.is_set():
                             self.logger.info("🔔 收到手动重建信号，立即销毁重建！")
                             rebuild_event.clear()
+                        account_evt = _account_rebuild_events.get(self.uid)
+                        if account_evt and account_evt.is_set():
+                            self.logger.info("🔔 收到单账号重建信号，立即销毁重建！")
+                            account_evt.clear()
                         continue
                     else:
                         self.logger.warning("虽然状态显示 AVAILABLE，但免重建重连失败！继续走全量摧毁新建流程...")
@@ -443,10 +470,14 @@ class AccountManager:
                 
                 # 关闭本地 ws，释放本地请求负荷，让内网 bridge 持续长留工作
                 await client.close()
-                await interruptible_sleep(wait_time)
+                await interruptible_sleep(wait_time, self.uid)
                 if rebuild_event.is_set():
                     self.logger.info("🔔 收到手动重建信号，立即销毁重建！")
                     rebuild_event.clear()
+                account_evt = _account_rebuild_events.get(self.uid)
+                if account_evt and account_evt.is_set():
+                    self.logger.info("🔔 收到单账号重建信号，立即销毁重建！")
+                    account_evt.clear()
 
             except asyncio.CancelledError:
                 await client.close()

@@ -18,7 +18,7 @@ from pathlib import Path
 MODEL_MAPPING_FILE = Path(__file__).parent.parent / "model_mapping.json"
 
 # 引入 Manager 长驻协程任务
-from .manager import start_manager_tasks, trigger_rebuild
+from .manager import start_manager_tasks, trigger_rebuild, trigger_rebuild_single
 
 # Responses API 转换器
 from .responses_converter import convert_request as responses_convert_request
@@ -252,6 +252,13 @@ class ForwardAttempt:
 async def api_rebuild():
     trigger_rebuild()
     return JSONResponse(content={"ok": True, "message": "重建信号已发送，所有节点将在当前循环结束后立即重建"})
+
+@app.post("/api/rebuild/{user_id}")
+async def api_rebuild_single(user_id: str):
+    found = trigger_rebuild_single(user_id)
+    if not found:
+        return JSONResponse(content={"ok": False, "message": f"未找到账号 {user_id}"}, status_code=404)
+    return JSONResponse(content={"ok": True, "message": f"账号 {user_id} 重建信号已发送"})
 
 @app.get("/api/stats")
 async def api_stats():
