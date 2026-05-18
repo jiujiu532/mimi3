@@ -645,10 +645,8 @@ async def responses_handler(request: Request):
 
     model = chat_req.get("model", "")
     is_streaming = chat_req.get("stream", False) is True
-    # 检测客户端类型：OpenAI SDK/Codex 的 UA 包含 "OpenAI"/"codex"
-    # 其他客户端（Cherry Studio/Chatbox）走 chat completions 兼容格式
-    ua = request.headers.get("user-agent", "")
-    use_responses_format = "openai" in ua.lower() or "codex" in ua.lower()
+    # 统一使用 Responses API SSE 格式，兼容 Codex 和 Cherry Studio
+    use_responses_format = True
 
     chat_body_text = json.dumps(chat_req, ensure_ascii=False)
     max_retries = min(MAX_RETRIES, get_available_client_count())
