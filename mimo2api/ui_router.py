@@ -18,7 +18,7 @@ from .auth import (
     webui_cookie_secure,
 )
 from .gateway_state import state
-from .manager import trigger_rebuild_single
+from .manager import trigger_rebuild_single, hot_reload_account
 
 router = APIRouter()
 
@@ -172,6 +172,9 @@ async def api_users_add(request: Request):
         }
         with open(target_file, "w", encoding="utf-8") as f:
             json.dump(user_data, f, ensure_ascii=False, indent=2)
+        
+        # 热重载：停止旧线程（如有），用新 cookie 启动新 Manager 线程
+        hot_reload_account(uid)
             
         return JSONResponse({"status": "ok", "userId": uid})
     except Exception as e:

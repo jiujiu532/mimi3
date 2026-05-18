@@ -495,6 +495,9 @@ class AccountManager:
                 await client.close()
                 await asyncio.sleep(60)
 
+# 运行中的账号任务跟踪
+_account_tasks: dict[str, asyncio.Task] = {}
+
 async def start_manager_tasks():
     logger.info("🚀 mimo2api 分布式并发账号池控制引擎 (Manager) 已点火启动!")
     users = load_all_users()
@@ -520,9 +523,41 @@ async def start_manager_tasks():
         manager = AccountManager(uid, user_info, stagger_offset=stagger_offset)
         # 初始启动小幅错开 3 秒，避免并发导致 API 短期拒绝
         t = asyncio.create_task(_delayed_start(manager, i * 3.0))
+        _account_tasks[uid] = t
         tasks.append(t)
     
     await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def hot_reload_account(uid: str):
+    """热重载单个账号：停止旧线程，用新 cookie 启动新线程（无需重启容器）"""
+    # 停止旧线程
+    old_task = _account_tasks.get(uid)
+    if old_task and not old_task.done():
+        old_task.cancel()
+    
+    # 清理旧的重建信号
+    _account_rebuild_events.pop(uid, None)
+    
+    # 从文件重新读取该账号信息
+    user_file = os.path.join(ROOT_DIR, "users", f"user_{uid}.json")
+    if not os.path.exists(user_file):
+        logger.warning(f"热重载失败: 账号文件 {user_file} 不存在")
+        return False
+    
+    try:
+        with open(user_file, "r", encoding="utf-8") as f:
+            user_info = json.load(f)
+    except Exception as e:
+        logger.error(f"热重载失败: 读取账号文件异常: {e}")
+        return False
+    
+    # 启动新线程
+    manager = AccountManager(uid, user_info, stagger_offset=0)
+    t = asyncio.create_task(manager.run_lifecycle())
+    _account_tasks[uid] = t
+    logger.info(f"🔄 账号 {uid} 已热重载，新 Manager 线程已启动")
+    return True
 
 async def main():
     await start_manager_tasks()

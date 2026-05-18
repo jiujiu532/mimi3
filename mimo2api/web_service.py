@@ -18,7 +18,7 @@ from pathlib import Path
 MODEL_MAPPING_FILE = Path(__file__).parent.parent / "model_mapping.json"
 
 # 引入 Manager 长驻协程任务
-from .manager import start_manager_tasks, trigger_rebuild, trigger_rebuild_single
+from .manager import start_manager_tasks, trigger_rebuild, trigger_rebuild_single, hot_reload_account
 
 # Responses API 转换器
 from .responses_converter import convert_request as responses_convert_request
