@@ -21,6 +21,7 @@ class GatewayState:
         self.metrics_history_last_snapshot: Dict[str, Any] | None = None
         self.metrics: Dict[str, Any] = self._default_metrics()
         self.recent_errors: deque = deque(maxlen=500)
+        self.manager_logs: deque = deque(maxlen=200)  # Manager 实例日志缓冲区
 
     @staticmethod
     def _default_metrics() -> Dict[str, Any]:

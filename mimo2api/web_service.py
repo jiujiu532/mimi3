@@ -276,6 +276,12 @@ async def api_errors(limit: int = 50):
     errors.reverse()  # 最新的在前
     return JSONResponse(content={"count": len(errors), "errors": errors})
 
+@app.get("/api/manager-logs")
+async def api_manager_logs(limit: int = 100):
+    limit = max(1, min(limit, 200))
+    logs = list(state.manager_logs)[-limit:]
+    return JSONResponse(content={"count": len(logs), "logs": logs})
+
 def load_model_mapping() -> dict[str, str]:
     if not MODEL_MAPPING_FILE.exists():
         return {}

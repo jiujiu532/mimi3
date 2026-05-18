@@ -60,6 +60,33 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(name)s] - %(lev
 logger = logging.getLogger("Manager")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# 自定义 handler：把 Manager/Acc- 日志写入 state 缓冲区供 WebUI 展示
+class _ManagerLogHandler(logging.Handler):
+    def emit(self, record):
+        from .gateway_state import state
+        try:
+            msg = self.format(record)
+            state.manager_logs.append({
+                "ts": int(record.created),
+                "level": record.levelname,
+                "name": record.name,
+                "msg": record.getMessage(),
+            })
+        except Exception:
+            pass
+
+_mgr_handler = _ManagerLogHandler()
+_mgr_handler.setLevel(logging.INFO)
+# 挂到 Manager 和所有 Acc- logger 的父级
+logging.getLogger("Manager").addHandler(_mgr_handler)
+# Acc- 开头的 logger 会自动继承 root，但我们用 filter 精确匹配
+class _AccFilter(logging.Filter):
+    def filter(self, record):
+        return record.name.startswith("Acc-") or record.name == "Manager"
+
+_mgr_handler.addFilter(_AccFilter())
+logging.getLogger().addHandler(_mgr_handler)
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_URL = "https://aistudio.xiaomimimo.com"
 WS_URL = "wss://aistudio.xiaomimimo.com/ws/proxy"
