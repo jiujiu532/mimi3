@@ -645,9 +645,6 @@ async def responses_handler(request: Request):
 
     model = chat_req.get("model", "")
     is_streaming = chat_req.get("stream", False) is True
-    if "stream" not in req_body:
-        is_streaming = True
-        chat_req["stream"] = True
 
     chat_body_text = json.dumps(chat_req, ensure_ascii=False)
     max_retries = min(MAX_RETRIES, get_available_client_count())
