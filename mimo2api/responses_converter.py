@@ -362,6 +362,9 @@ class ResponsesStreamConverter:
         if delta.get("role"):
             yield from self._emit_response_created()
 
+        # 处理 reasoning_content（思考过程），忽略不传给客户端
+        # 部分模型会返回 reasoning_content 字段，客户端不认识会报验证错误
+
         if content := delta.get("content"):
             yield from self._ensure_text_item_started()
             self._text_buf += content
