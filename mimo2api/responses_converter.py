@@ -362,10 +362,8 @@ class ResponsesStreamConverter:
         if delta.get("role"):
             yield from self._emit_response_created()
 
-        # 优先取 content，如果没有则取 reasoning_content（部分模型把回答放在这里）
-        content = delta.get("content") or delta.get("reasoning_content")
-
-        if content:
+        # 只处理 content 字段，跳过 reasoning_content（思考过程不输出）
+        if content := delta.get("content"):
             yield from self._ensure_text_item_started()
             self._text_buf += content
             yield _sse_event("response.output_text.delta", {"output_index": self._text_out_idx, "content_index": 0, "delta": content})
