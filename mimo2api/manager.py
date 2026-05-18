@@ -162,7 +162,8 @@ class NativeClawClient:
             # 2. 发起创建
             r = await client.post(url_create, cookies=self.cookies, headers=_aistudio_headers(), timeout=20)
             if r.status_code == 401:
-                self.logger.error("账户已过期失效 (Create 401)")
+                self.logger.error("账户已过期失效 (Create 401)，停止重试，请重新导入 cookie")
+                self.expired = True
                 return False
             
             # 3. 轮询直到 AVAILABLE
@@ -171,6 +172,8 @@ class NativeClawClient:
             while time.time() < deadline:
                 sr = await client.get(url_status, cookies=self.cookies, headers=_aistudio_headers(), timeout=15)
                 if sr.status_code == 401:
+                    self.logger.error("账户已过期失效 (Status 401)，停止重试，请重新导入 cookie")
+                    self.expired = True
                     return False
                 try:
                     d = sr.json()
@@ -179,13 +182,16 @@ class NativeClawClient:
                         self.logger.info(f"Claw 创建状态: {st}")
                         last_status = st
                     if st == "AVAILABLE":
+                        self.consecutive_failures = 0  # 重置失败计数
                         return True
-                    if st in ("FAILED", "DESTROYED", "ERROR"):
+                    if st in ("FAILED", "DESTROYED", "ERROR", "CREATE_FAILED"):
                         self.logger.error(f"创建失败，状态进入: {st}")
+                        self.consecutive_failures += 1
                         return False
                 except Exception:
                     pass
                 await asyncio.sleep(2)
+        self.consecutive_failures += 1
         return False
 
     async def _get_ticket(self) -> str:
@@ -336,6 +342,9 @@ class AccountManager:
         self.is_first_round = True
         # 注册单账号重建信号
         _account_rebuild_events[self.uid] = asyncio.Event()
+        # 账号状态标记
+        self.expired = False  # 401 过期标记
+        self.consecutive_failures = 0  # 连续创建失败次数
 
     async def get_instance_status(self) -> tuple[str, int]:
         """获取当前容器的状态和剩余时间(秒)"""
@@ -343,6 +352,10 @@ class AccountManager:
         try:
             async with httpx.AsyncClient() as c:
                 r = await c.get(url, cookies=self.cookies, headers=_aistudio_headers(), timeout=15)
+                if r.status_code == 401:
+                    self.logger.error("账户已过期失效 (Status 401)，停止重试")
+                    self.expired = True
+                    return "EXPIRED(401)", 0
                 data = r.json()
                 st = data.get("data", {}).get("status", "")
                 expire_ms = data.get("data", {}).get("expireTime")
@@ -375,6 +388,32 @@ class AccountManager:
                 self.logger.info(f"账号文件已被删除，退出生命周期管理。")
                 _account_rebuild_events.pop(self.uid, None)
                 return
+
+            # 401 过期标记：停止重试，等待用户重新导入 cookie
+            if self.expired:
+                self.logger.warning("⛔ 账号 cookie 已过期(401)，暂停生命周期。请在 WebUI 重新导入 cookie。")
+                # 无限等待重建信号（用户重新导入时会触发）
+                await interruptible_sleep(86400, self.uid)
+                account_evt = _account_rebuild_events.get(self.uid)
+                if account_evt and account_evt.is_set():
+                    account_evt.clear()
+                if rebuild_event.is_set():
+                    rebuild_event.clear()
+                # 重新导入后 hot_reload 会取消本线程，这里只是兜底
+                continue
+
+            # CREATE_FAILED 退避策略：连续失败越多，等待越久
+            if self.consecutive_failures > 0:
+                backoff = min(self.consecutive_failures * 60, 30 * 60)  # 每次多等1分钟，最多30分钟
+                self.logger.warning(f"⏳ 连续创建失败 {self.consecutive_failures} 次，退避等待 {backoff // 60} 分钟后重试...")
+                await interruptible_sleep(backoff, self.uid)
+                account_evt = _account_rebuild_events.get(self.uid)
+                if account_evt and account_evt.is_set():
+                    account_evt.clear()
+                    self.consecutive_failures = 0  # 手动重建时重置计数
+                if rebuild_event.is_set():
+                    rebuild_event.clear()
+                    self.consecutive_failures = 0
 
             self.logger.info("=== 启动新一轮 Claw 生命周期 (设定运行阈值 55 分钟) ===")
             client = NativeClawClient(self.ph, self.cookies, self.logger)
@@ -426,9 +465,11 @@ class AccountManager:
                 # 2. 从头 Create 且连入
                 self.logger.info("申请初始化新云端实例容器...")
                 if not await self.connect_with_retry(client, max_retries=5, delay=5, create=True):
-                    self.logger.error("全流程首次建联连结都失败，可能由于服务封禁/账户死亡。休眠 1 分钟再试...")
+                    if self.expired:
+                        await client.close()
+                        continue  # 回到循环顶部，会被 expired 检查拦住
+                    self.logger.error("全流程首次建联连结都失败，可能由于服务封禁/账户死亡。")
                     await client.close()
-                    await asyncio.sleep(60)
                     continue
                 
                 # 3. 发送环境重置换源指令
