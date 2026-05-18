@@ -32,7 +32,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     model: str = ""
     messages: list[ChatMessage]
-    stream: bool = True
+    stream: bool = False
     max_tokens: Optional[int] = None
     # 允许额外透传的参数 (temperature, top_p, tools 等) 自动保留
     model_config = ConfigDict(extra="allow")
