@@ -645,6 +645,9 @@ async def responses_handler(request: Request):
 
     model = chat_req.get("model", "")
     is_streaming = chat_req.get("stream", False) is True
+    # 判断是否为原生 Responses API 客户端（Codex/OpenAI SDK）
+    # 这类客户端会发送 include 字段，期望 Responses SSE 事件格式
+    use_responses_format = "include" in req_body
 
     chat_body_text = json.dumps(chat_req, ensure_ascii=False)
     max_retries = min(MAX_RETRIES, get_available_client_count())
@@ -676,63 +679,120 @@ async def responses_handler(request: Request):
                 return Response(raw_body, status_code=status_code, media_type=content_type, headers=response_headers)
 
             if is_streaming:
-                # 兼容层：直接透传上游 chat completions SSE 流
-                # 大多数客户端（Cherry Studio/Chatbox 等）不支持 Responses API 的 SSE 事件格式
-                # 直接返回 chat completions 格式的 SSE，所有客户端都能正常解析
+                if use_responses_format:
+                    # 原生 Responses API SSE 格式（Codex/OpenAI SDK）
+                    converter = ResponsesStreamConverter(model=model)
 
-                async def responses_compat_stream_generator(current_req_id, current_queue):
-                    last_data_time = time.monotonic()
-                    stream_succeeded = False
-                    data_task = asyncio.ensure_future(current_queue.get())
+                    async def responses_stream_generator(current_req_id, current_queue):
+                        last_data_time = time.monotonic()
+                        stream_succeeded = False
+                        data_task = asyncio.ensure_future(current_queue.get())
 
-                    async def _do_keepalive():
-                        await asyncio.sleep(STREAM_KEEPALIVE_INTERVAL)
-                        return b": keep-alive\n\n"
-                    keepalive_task = asyncio.ensure_future(_do_keepalive())
+                        async def _do_keepalive():
+                            await asyncio.sleep(STREAM_KEEPALIVE_INTERVAL)
+                            return b": keep-alive\n\n"
+                        keepalive_task = asyncio.ensure_future(_do_keepalive())
 
-                    try:
-                        while True:
-                            done, _ = await asyncio.wait({data_task, keepalive_task}, return_when=asyncio.FIRST_COMPLETED)
+                        try:
+                            while True:
+                                done, _ = await asyncio.wait({data_task, keepalive_task}, return_when=asyncio.FIRST_COMPLETED)
 
-                            if keepalive_task in done:
-                                elapsed = time.monotonic() - last_data_time
-                                if elapsed > STREAM_CHUNK_TIMEOUT:
-                                    logger.warning(f"⚠️ Responses 流式 {elapsed:.0f}s 无数据，节点可能已断开 [{current_req_id[:8]}]")
+                                if keepalive_task in done:
+                                    elapsed = time.monotonic() - last_data_time
+                                    if elapsed > STREAM_CHUNK_TIMEOUT:
+                                        logger.warning(f"⚠️ Responses 流式 {elapsed:.0f}s 无数据，节点可能已断开 [{current_req_id[:8]}]")
+                                        break
+                                    yield keepalive_task.result()
+                                    keepalive_task = asyncio.ensure_future(_do_keepalive())
+                                    continue
+
+                                last_data_time = time.monotonic()
+                                data_task = asyncio.ensure_future(current_queue.get())
+                                msg = done.pop().result()
+                                if msg.get("type") == "finish":
+                                    stream_succeeded = True
+                                    for evt in converter.finalize():
+                                        yield evt.encode("utf-8")
                                     break
-                                yield keepalive_task.result()
-                                keepalive_task = asyncio.ensure_future(_do_keepalive())
-                                continue
+                                elif msg.get("type") == "error":
+                                    err_evt = f"event: error\ndata: {json.dumps({'type': 'error', 'message': msg.get('body')})}\n\n"
+                                    yield err_evt.encode("utf-8")
+                                    break
+                                elif msg.get("type") == "chunk":
+                                    for line in msg.get("body", "").split("\n"):
+                                        for evt in converter.process_chunk(line):
+                                            yield evt.encode("utf-8")
+                        finally:
+                            data_task.cancel()
+                            keepalive_task.cancel()
+                            await asyncio.gather(data_task, keepalive_task, return_exceptions=True)
+                            cleanup_pending_request(current_req_id)
+                            usage_obj = getattr(converter, "_usage", None)
+                            record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded, usage=usage_obj.model_dump() if usage_obj else None)
 
-                            last_data_time = time.monotonic()
-                            data_task = asyncio.ensure_future(current_queue.get())
-                            msg = done.pop().result()
-                            if msg.get("type") == "finish":
-                                stream_succeeded = True
-                                yield b"data: [DONE]\n\n"
-                                break
-                            elif msg.get("type") == "error":
-                                err_data = json.dumps({"error": {"message": msg.get("body", "unknown error")}})
-                                yield f"data: {err_data}\n\n".encode("utf-8")
-                                break
-                            elif msg.get("type") == "chunk":
-                                body = msg.get("body", "")
-                                if body:
-                                    yield body.encode("utf-8")
-                                    if not body.endswith("\n"):
-                                        yield b"\n"
-                    finally:
-                        data_task.cancel()
-                        keepalive_task.cancel()
-                        await asyncio.gather(data_task, keepalive_task, return_exceptions=True)
-                        cleanup_pending_request(current_req_id)
-                        record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded)
+                    return StreamingResponse(
+                        responses_stream_generator(req_id, queue),
+                        status_code=status_code,
+                        media_type="text/event-stream",
+                        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+                    )
+                else:
+                    # 兼容模式：透传上游 chat completions SSE 流
+                    # Cherry Studio/Chatbox 等客户端不支持 Responses SSE 事件格式
 
-                return StreamingResponse(
-                    responses_compat_stream_generator(req_id, queue),
-                    status_code=status_code,
-                    media_type="text/event-stream",
-                    headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
-                )
+                    async def responses_compat_stream_generator(current_req_id, current_queue):
+                        last_data_time = time.monotonic()
+                        stream_succeeded = False
+                        data_task = asyncio.ensure_future(current_queue.get())
+
+                        async def _do_keepalive():
+                            await asyncio.sleep(STREAM_KEEPALIVE_INTERVAL)
+                            return b": keep-alive\n\n"
+                        keepalive_task = asyncio.ensure_future(_do_keepalive())
+
+                        try:
+                            while True:
+                                done, _ = await asyncio.wait({data_task, keepalive_task}, return_when=asyncio.FIRST_COMPLETED)
+
+                                if keepalive_task in done:
+                                    elapsed = time.monotonic() - last_data_time
+                                    if elapsed > STREAM_CHUNK_TIMEOUT:
+                                        logger.warning(f"⚠️ Responses 流式 {elapsed:.0f}s 无数据，节点可能已断开 [{current_req_id[:8]}]")
+                                        break
+                                    yield keepalive_task.result()
+                                    keepalive_task = asyncio.ensure_future(_do_keepalive())
+                                    continue
+
+                                last_data_time = time.monotonic()
+                                data_task = asyncio.ensure_future(current_queue.get())
+                                msg = done.pop().result()
+                                if msg.get("type") == "finish":
+                                    stream_succeeded = True
+                                    yield b"data: [DONE]\n\n"
+                                    break
+                                elif msg.get("type") == "error":
+                                    err_data = json.dumps({"error": {"message": msg.get("body", "unknown error")}})
+                                    yield f"data: {err_data}\n\n".encode("utf-8")
+                                    break
+                                elif msg.get("type") == "chunk":
+                                    body = msg.get("body", "")
+                                    if body:
+                                        yield body.encode("utf-8")
+                                        if not body.endswith("\n"):
+                                            yield b"\n"
+                        finally:
+                            data_task.cancel()
+                            keepalive_task.cancel()
+                            await asyncio.gather(data_task, keepalive_task, return_exceptions=True)
+                            cleanup_pending_request(current_req_id)
+                            record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded)
+
+                    return StreamingResponse(
+                        responses_compat_stream_generator(req_id, queue),
+                        status_code=status_code,
+                        media_type="text/event-stream",
+                        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+                    )
             else:
                 raw_body = await collect_response_body(req_id, queue)
                 try:
