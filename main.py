@@ -33,7 +33,8 @@ if __name__ == "__main__":
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    root_logger.handlers.clear()
+    # 只清除默认的 StreamHandler，保留自定义的 _ManagerLogHandler
+    root_logger.handlers = [h for h in root_logger.handlers if not isinstance(h, logging.StreamHandler)]
 
     fmt = logging.Formatter("%(asctime)s - [%(name)s] - %(levelname)s - %(message)s")
 
