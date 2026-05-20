@@ -79,7 +79,6 @@ class _ManagerLogHandler(logging.Handler):
     def emit(self, record):
         from .gateway_state import state
         try:
-            msg = self.format(record)
             state.manager_logs.append({
                 "ts": int(record.created),
                 "level": record.levelname,
@@ -91,14 +90,14 @@ class _ManagerLogHandler(logging.Handler):
 
 _mgr_handler = _ManagerLogHandler()
 _mgr_handler.setLevel(logging.INFO)
-# 挂到 Manager 和所有 Acc- logger 的父级
-logging.getLogger("Manager").addHandler(_mgr_handler)
-# Acc- 开头的 logger 会自动继承 root，但我们用 filter 精确匹配
+
+# 用 filter 只捕获 Manager 和 Acc- 开头的日志
 class _AccFilter(logging.Filter):
     def filter(self, record):
         return record.name.startswith("Acc-") or record.name == "Manager"
 
 _mgr_handler.addFilter(_AccFilter())
+# 挂到 root logger，所有子 logger 的日志都会传播到这里
 logging.getLogger().addHandler(_mgr_handler)
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
