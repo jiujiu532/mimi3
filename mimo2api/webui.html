@@ -430,6 +430,22 @@
                     </tbody>
                 </table>
             </div>
+            <!-- 分页器 -->
+            <div id="paginationBar" style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding:0 4px; font-size:13px; color:var(--text-muted);">
+                <span id="pageInfo"></span>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <select id="pageSizeSelect" onchange="changePageSize()" style="padding:4px 8px; border-radius:6px; border:1px solid #D1D5DB; font-size:13px; cursor:pointer;">
+                        <option value="5">5 条/页</option>
+                        <option value="10">10 条/页</option>
+                        <option value="20">20 条/页</option>
+                        <option value="50">50 条/页</option>
+                        <option value="100">100 条/页</option>
+                    </select>
+                    <button class="btn btn-outline" id="prevPageBtn" onclick="prevPage()" style="padding:4px 10px; font-size:12px;">上一页</button>
+                    <span id="pageNum" style="min-width:60px; text-align:center;"></span>
+                    <button class="btn btn-outline" id="nextPageBtn" onclick="nextPage()" style="padding:4px 10px; font-size:12px;">下一页</button>
+                </div>
+            </div>
         </div>
 
         <!-- 代理池配置 -->
@@ -580,38 +596,79 @@
             }
         }
 
+        // ===== 分页状态 =====
+        let allUsers = [];
+        let currentPage = 1;
+        let pageSize = 5;
+
+        function renderUsersPage() {
+            const tbody = document.getElementById('usersBody');
+            const totalPages = Math.ceil(allUsers.length / pageSize) || 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            const start = (currentPage - 1) * pageSize;
+            const end = start + pageSize;
+            const pageUsers = allUsers.slice(start, end);
+
+            if (pageUsers.length > 0) {
+                tbody.innerHTML = pageUsers.map(u => `
+                    <tr>
+                        <td style="text-align:center;"><input type="checkbox" class="user-checkbox" value="${u.userId}" onchange="updateRebuildBtn()"></td>
+                        <td><strong style="color:var(--primary)">${u.userId}</strong></td>
+                        <td>${u.name || '(未命名)'}</td>
+                        <td>
+                            <div><strong style="color: ${u.claw_status === 'AVAILABLE' ? '#10B981' : (u.claw_status === 'EXPIRED(401)' ? '#EF4444' : '#F59E0B')}">${u.claw_status || '未知'}</strong></div>
+                            <div class="countdown-text" data-remain="${u.remain_sec}" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+                                ${u.remain_sec > 0 ? '剩余: ' + Math.floor(u.remain_sec / 60) + ' 分 ' + (u.remain_sec % 60) + ' 秒' : '已过期/无环境'}
+                            </div>
+                        </td>
+                        <td>
+                            <span style="display:inline-block; max-width: 120px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color: var(--text-muted);">
+                                ${u.serviceToken ? u.serviceToken.substring(0,10)+'...' : '无效'}
+                            </span>
+                        </td>
+                        <td>
+                            <button class="btn btn-danger" onclick="deleteUser('${u.userId}')">删除</button>
+                        </td>
+                    </tr>
+                `).join('');
+                updateRebuildBtn();
+            } else {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前未加载任何凭证</td></tr>';
+            }
+
+            // 更新分页信息
+            document.getElementById('pageInfo').textContent = `共 ${allUsers.length} 个账号`;
+            document.getElementById('pageNum').textContent = `${currentPage} / ${totalPages}`;
+            document.getElementById('prevPageBtn').disabled = currentPage <= 1;
+            document.getElementById('nextPageBtn').disabled = currentPage >= totalPages;
+        }
+
+        function changePageSize() {
+            pageSize = parseInt(document.getElementById('pageSizeSelect').value);
+            currentPage = 1;
+            renderUsersPage();
+        }
+
+        function prevPage() {
+            if (currentPage > 1) { currentPage--; renderUsersPage(); }
+        }
+
+        function nextPage() {
+            const totalPages = Math.ceil(allUsers.length / pageSize) || 1;
+            if (currentPage < totalPages) { currentPage++; renderUsersPage(); }
+        }
+
         async function fetchUsers() {
             try {
                 const res = await apiFetch('/api/users/list');
                 const data = await res.json();
-                const tbody = document.getElementById('usersBody');
                 
                 if (data.users && data.users.length > 0) {
-                    tbody.innerHTML = data.users.map(u => `
-                        <tr>
-                            <td style="text-align:center;"><input type="checkbox" class="user-checkbox" value="${u.userId}" onchange="updateRebuildBtn()"></td>
-                            <td><strong style="color:var(--primary)">${u.userId}</strong></td>
-                            <td>${u.name || '(未命名)'}</td>
-                            <td>
-                                <div><strong style="color: ${u.claw_status === 'AVAILABLE' ? '#10B981' : (u.claw_status === 'EXPIRED(401)' ? '#EF4444' : '#F59E0B')}">${u.claw_status || '未知'}</strong></div>
-                                <div class="countdown-text" data-remain="${u.remain_sec}" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
-                                    ${u.remain_sec > 0 ? '剩余: ' + Math.floor(u.remain_sec / 60) + ' 分 ' + (u.remain_sec % 60) + ' 秒' : '已过期/无环境'}
-                                </div>
-                            </td>
-                            <td>
-                                <span style="display:inline-block; max-width: 120px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color: var(--text-muted);">
-                                    ${u.serviceToken ? u.serviceToken.substring(0,10)+'...' : '无效'}
-                                </span>
-                            </td>
-                            <td>
-                                <button class="btn btn-danger" onclick="deleteUser('${u.userId}')">删除</button>
-                            </td>
-                        </tr>
-                    `).join('');
-                    updateRebuildBtn();
+                    allUsers = data.users;
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前未加载任何凭证</td></tr>';
+                    allUsers = [];
                 }
+                renderUsersPage();
             } catch(e) {
                 if (e.message !== 'UNAUTHORIZED') {
                     console.error("加载用户列表失败", e);
