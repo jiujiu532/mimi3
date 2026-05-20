@@ -33,8 +33,9 @@ if __name__ == "__main__":
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()
 
-    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    fmt = logging.Formatter("%(asctime)s - [%(name)s] - %(levelname)s - %(message)s")
 
     # journal（stdout）
     sh = logging.StreamHandler()

@@ -1,19 +1,28 @@
 import asyncio
 import base64
 import binascii
-import fcntl
 import json
 import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TextIO
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
 import uvicorn
 import os
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 MODEL_MAPPING_FILE = Path(__file__).parent.parent / "model_mapping.json"
 
@@ -63,6 +72,7 @@ metrics_persist_task = None
 sweeper_bg_task = None
 single_process_lock_file = None
 STALE_QUEUE_TTL = 300
+SHUTDOWN_TASK_TIMEOUT = float(os.getenv("MIMO_SHUTDOWN_TASK_TIMEOUT", "5"))
 
 def sweep_stale_queues_once(now: float | None = None) -> int:
     now = time.time() if now is None else now
@@ -87,6 +97,38 @@ async def sweep_stale_queues():
         except Exception as e:
             logger.error(f"清理死锁队列任务发生异常: {e}")
 
+
+async def close_active_clients() -> None:
+    """关闭所有内网节点 WebSocket 连接"""
+    clients = list(state.active_clients)
+    if not clients:
+        return
+
+    logger.info(f"🛑 正在关闭 {len(clients)} 个内网节点连接...")
+    for client in clients:
+        try:
+            await client.close()
+        except Exception as exc:
+            logger.debug(f"关闭内网节点连接失败: {exc}")
+
+
+async def cancel_and_wait_tasks(tasks: list[asyncio.Task | None], *, label: str) -> None:
+    """带超时的批量任务取消"""
+    pending = [task for task in tasks if task is not None and not task.done()]
+    if not pending:
+        return
+
+    for task in pending:
+        task.cancel()
+
+    try:
+        await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=SHUTDOWN_TASK_TIMEOUT)
+    except asyncio.TimeoutError:
+        still_running = [task for task in pending if not task.done()]
+        logger.warning(
+            f"⚠️ 关闭 {label} 超时，{len(still_running)} 个任务在 {SHUTDOWN_TASK_TIMEOUT}s 内未退出"
+        )
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global manager_bg_task, metrics_persist_task, sweeper_bg_task
@@ -98,21 +140,24 @@ async def lifespan(app: FastAPI):
     if fixed:
         logger.info(f"🔧 重新分类了 {fixed} 条历史状态记录")
         
-    manager_bg_task = asyncio.create_task(start_manager_tasks())
-    metrics_persist_task = asyncio.create_task(metrics_history_worker())
-    sweeper_bg_task = asyncio.create_task(sweep_stale_queues()) # 启动巡检死神
+    manager_bg_task = asyncio.create_task(start_manager_tasks(), name="mimo-manager")
+    metrics_persist_task = asyncio.create_task(metrics_history_worker(), name="mimo-metrics")
+    sweeper_bg_task = asyncio.create_task(sweep_stale_queues(), name="mimo-sweeper") # 启动巡检死神
     
     yield
-    
-    for task in [manager_bg_task, metrics_persist_task, sweeper_bg_task]:
-        if task:
-            task.cancel()
-    if metrics_persist_task:
-        try:
-            await metrics_persist_task
-        except asyncio.CancelledError:
-            pass
-    release_single_process_lock()
+
+    try:
+        await close_active_clients()
+        await cancel_and_wait_tasks(
+            [manager_bg_task, metrics_persist_task, sweeper_bg_task],
+            label="核心后台任务",
+        )
+        await cancel_and_wait_tasks(list(_background_tasks), label="转发清理任务")
+    finally:
+        manager_bg_task = None
+        metrics_persist_task = None
+        sweeper_bg_task = None
+        release_single_process_lock()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -128,7 +173,7 @@ NODE_RESPONSE_TIMEOUT = 30
 MAX_RETRIES = 3
 MAX_PENDING_QUEUES = 2000
 AI_ROUTE_PREFIXES = ("/v1/", "/anthropic/v1/")
-WEBUI_PUBLIC_PATHS = {"/", "/webui", "/api/auth/session", "/api/auth/login", "/api/auth/logout"}
+WEBUI_PUBLIC_PATHS = {"/", "/webui", "/api/auth/session", "/api/auth/login", "/api/auth/logout", "/api/stats", "/api/status/history"}
 
 if is_ai_auth_enabled():
     logger.info("🔐 AI API 鉴权已启用")
@@ -201,10 +246,37 @@ PROCESS_LOCK_PATH = os.getenv("MIMO_PROCESS_LOCK_PATH", os.path.join(ROOT_DIR, "
 
 # 后台 fire-and-forget 任务集合
 _background_tasks: set[asyncio.Task] = set()
+PROCESS_LOCK_SIZE = 1
 
 def _track_task(task: asyncio.Task) -> None:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+def _lock_file_nonblocking(lock_file: TextIO) -> None:
+    """跨平台非阻塞文件锁"""
+    if os.name == "nt":
+        if msvcrt is None:
+            raise OSError("当前平台缺少 msvcrt，无法加锁。")
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, PROCESS_LOCK_SIZE)
+        return
+
+    if fcntl is None:
+        raise OSError("当前平台缺少 fcntl，无法加锁。")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+def _unlock_file(lock_file: TextIO) -> None:
+    """跨平台文件解锁"""
+    if os.name == "nt":
+        if msvcrt is None:
+            raise OSError("当前平台缺少 msvcrt，无法解锁。")
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, PROCESS_LOCK_SIZE)
+        return
+
+    if fcntl is None:
+        raise OSError("当前平台缺少 fcntl，无法解锁。")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 def acquire_single_process_lock() -> None:
     global single_process_lock_file
@@ -212,8 +284,14 @@ def acquire_single_process_lock() -> None:
         return
 
     try:
-        lock_file = open(PROCESS_LOCK_PATH, "w", encoding="utf-8")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_path = Path(PROCESS_LOCK_PATH)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.touch(exist_ok=True)
+        lock_file = lock_path.open("r+", encoding="utf-8")
+        if lock_path.stat().st_size < PROCESS_LOCK_SIZE:
+            lock_file.write("\n")
+            lock_file.flush()
+        _lock_file_nonblocking(lock_file)
     except (BlockingIOError, OSError) as exc:
         if 'lock_file' in locals():
             lock_file.close()
@@ -230,7 +308,7 @@ def release_single_process_lock() -> None:
     if single_process_lock_file is None:
         return
     try:
-        fcntl.flock(single_process_lock_file.fileno(), fcntl.LOCK_UN)
+        _unlock_file(single_process_lock_file)
     finally:
         single_process_lock_file.close()
         single_process_lock_file = None
@@ -692,6 +770,10 @@ async def responses_handler(request: Request):
 
     model = chat_req.get("model", "")
     is_streaming = chat_req.get("stream", False) is True
+    # 如果请求未指定 stream，默认强制开启流式（Responses API 标准行为）
+    if "stream" not in req_body:
+        is_streaming = True
+        chat_req["stream"] = True
     # 统一使用 Responses API SSE 格式，兼容 Codex 和 Cherry Studio
     use_responses_format = True
 

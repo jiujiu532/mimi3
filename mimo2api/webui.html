@@ -528,9 +528,13 @@
             const opts = { credentials: 'same-origin', ...options };
             const res = await fetch(url, opts);
             if (res.status === 401) {
+                const wasAuthenticated = webAuthReady;
                 webAuthReady = false;
                 setShellVisibility(false);
-                document.getElementById('loginPassword').value = '';
+                // 仅在会话过期（之前已登录）时清空密码，未登录状态下不干扰用户输入
+                if (wasAuthenticated) {
+                    document.getElementById('loginPassword').value = '';
+                }
                 showToast('登录已失效，请重新登录', 'error');
                 throw new Error('UNAUTHORIZED');
             }
@@ -550,6 +554,8 @@
         }
 
         async function fetchStatus() {
+            // 认证开启但未登录时，跳过状态请求（避免 401 清空密码输入框）
+            if (webAuthEnabled && !webAuthReady) return;
             try {
                 const res = await apiFetch('/api/system/status');
                 const data = await res.json();
