@@ -448,10 +448,30 @@
             </div>
         </div>
 
-        <!-- 代理池配置 -->
-        <div class="glass-card" style="padding: 16px 24px;">
+        <!-- 系统设置 & 代理池配置 -->
+        <div class="glass-card">
+            <h2 style="margin: 0 0 14px 0; font-size: 18px;">系统设置</h2>
+            <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); margin-bottom:4px; display:block;">WebUI 用户名</label>
+                    <input type="text" id="settingsUsername" placeholder="admin" style="width:100%; padding:8px 10px; border:1px solid #D1D5DB; border-radius:6px; font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); margin-bottom:4px; display:block;">WebUI 密码</label>
+                    <input type="password" id="settingsPassword" placeholder="留空则不启用认证" style="width:100%; padding:8px 10px; border:1px solid #D1D5DB; border-radius:6px; font-size:13px; box-sizing:border-box;">
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text-muted); margin-bottom:4px; display:block;">API 密钥 (Bearer Key)</label>
+                    <input type="password" id="settingsApiKey" placeholder="留空则不对 API 鉴权" style="width:100%; padding:8px 10px; border:1px solid #D1D5DB; border-radius:6px; font-size:13px; box-sizing:border-box;">
+                </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <button class="btn" onclick="saveSettings()">保存设置</button>
+                <span id="settingsStatus" style="font-size:12px; color:var(--text-muted);"></span>
+            </div>
+            <hr style="border:none; border-top:1px solid #E5E7EB; margin:16px 0 12px 0;">
             <div style="display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
-                <h2 style="margin: 0; font-size: 16px; white-space: nowrap;">代理池配置</h2>
+                <h3 style="margin: 0; font-size: 15px; white-space: nowrap; color:var(--text-main);">代理池配置</h3>
                 <input type="text" id="proxyInput" class="form-control" placeholder="http://user:pass@ip:port (留空则不使用代理)" style="flex:1; margin:0; min-height:auto; height:38px; resize:none;">
                 <button class="btn" onclick="saveProxy()">保存</button>
                 <button class="btn btn-outline" onclick="testProxy()">测试连通</button>
@@ -800,6 +820,44 @@
             return div.innerHTML;
         }
 
+        // ===== 系统设置 =====
+        async function loadSettings() {
+            try {
+                const res = await apiFetch('/api/settings');
+                const data = await res.json();
+                document.getElementById('settingsUsername').value = data.username || '';
+                document.getElementById('settingsPassword').value = data.password || '';
+                document.getElementById('settingsApiKey').value = data.api_key || '';
+            } catch(e) {
+                if (e.message !== 'UNAUTHORIZED') console.error("加载设置失败", e);
+            }
+        }
+
+        async function saveSettings() {
+            const username = document.getElementById('settingsUsername').value.trim();
+            const password = document.getElementById('settingsPassword').value;
+            const api_key = document.getElementById('settingsApiKey').value.trim();
+
+            if (!confirm('保存设置后将自动登出，需要用新凭据重新登录。确定继续？')) return;
+
+            try {
+                const res = await apiFetch('/api/settings', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ username, password, api_key })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    showToast('设置已保存，正在登出...', 'success');
+                    setTimeout(() => { window.location.reload(); }, 1000);
+                } else {
+                    showToast(data.detail || '保存失败', 'error');
+                }
+            } catch(e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('保存设置失败: ' + e.message, 'error');
+            }
+        }
+
         // ===== 代理池配置 =====
         async function loadProxy() {
             try {
@@ -934,7 +992,7 @@
         }
 
         async function initializeDashboard() {
-            await Promise.all([fetchStatus(), fetchUsers(), loadProxy()]);
+            await Promise.all([fetchStatus(), fetchUsers(), loadProxy(), loadSettings()]);
             startStatusPolling();
         }
 

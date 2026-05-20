@@ -16,6 +16,7 @@ from .auth import (
     is_webui_authenticated,
     verify_webui_login,
     webui_cookie_secure,
+    get_ai_api_key,
 )
 from .gateway_state import state
 from .manager import trigger_rebuild_single, hot_reload_account
@@ -24,6 +25,7 @@ router = APIRouter()
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 USERS_DIR = os.path.join(ROOT_DIR, "users")
+ENV_FILE_PATH = os.path.join(ROOT_DIR, ".env")
 
 
 @router.get("/")
@@ -86,6 +88,100 @@ async def api_auth_login(request: Request):
 @router.post("/api/auth/logout")
 async def api_auth_logout():
     response = JSONResponse({"ok": True})
+    response.delete_cookie(key=get_webui_cookie_name(), path="/")
+    return response
+
+
+def _read_env_file() -> dict[str, str]:
+    """读取 .env 文件为 key=value 字典"""
+    env_vars = {}
+    if os.path.exists(ENV_FILE_PATH):
+        with open(ENV_FILE_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    env_vars[key.strip()] = value.strip()
+    return env_vars
+
+
+def _write_env_file(env_vars: dict[str, str]) -> None:
+    """将 key=value 字典写回 .env 文件，保留注释行"""
+    lines = []
+    existing_keys = set()
+    if os.path.exists(ENV_FILE_PATH):
+        with open(ENV_FILE_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    lines.append(line)
+                    continue
+                if "=" in stripped:
+                    key = stripped.partition("=")[0].strip()
+                    if key in env_vars:
+                        lines.append(f"{key}={env_vars[key]}\n")
+                        existing_keys.add(key)
+                    else:
+                        lines.append(line)
+                else:
+                    lines.append(line)
+    # 追加新增的 key
+    for key, value in env_vars.items():
+        if key not in existing_keys:
+            lines.append(f"{key}={value}\n")
+    with open(ENV_FILE_PATH, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+@router.get("/api/settings")
+async def api_get_settings():
+    return JSONResponse({
+        "username": get_webui_username(),
+        "password": get_webui_password() if is_web_auth_enabled() else "",
+        "api_key": get_ai_api_key(),
+    })
+
+
+def get_webui_password() -> str:
+    return os.getenv("MIMO_WEBUI_PASSWORD", "").strip()
+
+
+@router.put("/api/settings")
+async def api_put_settings(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "请求体不是合法 JSON"}, status_code=400)
+
+    username = body.get("username", "").strip()
+    password = body.get("password", "").strip()
+    api_key = body.get("api_key", "").strip()
+
+    # 读取现有 .env 并更新
+    env_vars = _read_env_file()
+    if username:
+        env_vars["MIMO_WEBUI_USERNAME"] = username
+        os.environ["MIMO_WEBUI_USERNAME"] = username
+    if password:
+        env_vars["MIMO_WEBUI_PASSWORD"] = password
+        os.environ["MIMO_WEBUI_PASSWORD"] = password
+    else:
+        # 密码为空则移除认证
+        env_vars.pop("MIMO_WEBUI_PASSWORD", None)
+        os.environ.pop("MIMO_WEBUI_PASSWORD", None)
+    if api_key:
+        env_vars["MIMO_RELAY_OPENAI_KEY"] = api_key
+        os.environ["MIMO_RELAY_OPENAI_KEY"] = api_key
+    else:
+        env_vars.pop("MIMO_RELAY_OPENAI_KEY", None)
+        os.environ.pop("MIMO_RELAY_OPENAI_KEY", None)
+
+    _write_env_file(env_vars)
+
+    # 清除 session cookie，强制重新登录
+    response = JSONResponse({"ok": True, "message": "设置已保存，请重新登录"})
     response.delete_cookie(key=get_webui_cookie_name(), path="/")
     return response
 
