@@ -104,6 +104,24 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_URL = "https://aistudio.xiaomimimo.com"
 WS_URL = "wss://aistudio.xiaomimimo.com/ws/proxy"
 
+# 全局并发控制：同时创建 Claw 实例的最大数量
+MAX_CONCURRENT_CREATES = int(os.getenv("MIMO_MAX_CONCURRENT_CREATES", "2"))
+_create_semaphore: asyncio.Semaphore | None = None
+
+def _get_create_semaphore() -> asyncio.Semaphore:
+    global _create_semaphore
+    if _create_semaphore is None:
+        _create_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CREATES)
+    return _create_semaphore
+
+def get_max_concurrent_creates() -> int:
+    return MAX_CONCURRENT_CREATES
+
+def set_max_concurrent_creates(value: int):
+    global MAX_CONCURRENT_CREATES, _create_semaphore
+    MAX_CONCURRENT_CREATES = max(1, min(value, 50))
+    _create_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CREATES)
+
 # 代理池配置
 PROXY_URL = os.getenv("MIMO_PROXY_URL", "")  # http://user:pass@ip:port
 
@@ -575,15 +593,18 @@ class AccountManager:
                     await client.destroy_claw()
                     await asyncio.sleep(3)
 
-                # 2. 从头 Create 且连入
-                self.logger.info("申请初始化新云端实例容器...")
-                if not await self.connect_with_retry(client, max_retries=5, delay=5, create=True):
-                    if self.expired:
+                # 2. 从头 Create 且连入（受全局并发信号量控制）
+                sem = _get_create_semaphore()
+                self.logger.info(f"申请初始化新云端实例容器（等待并发槽位，当前限制: {MAX_CONCURRENT_CREATES}）...")
+                async with sem:
+                    if not await self.connect_with_retry(client, max_retries=5, delay=5, create=True):
+                        if self.expired:
+                            await client.close()
+                            continue  # 回到循环顶部，会被 expired 检查拦住
+                        self.logger.error("全流程首次建联连结都失败，可能由于服务封禁/账户死亡。")
                         await client.close()
-                        continue  # 回到循环顶部，会被 expired 检查拦住
-                    self.logger.error("全流程首次建联连结都失败，可能由于服务封禁/账户死亡。")
-                    await client.close()
-                    continue
+                        await asyncio.sleep(60)  # 429 退避等待
+                        continue
                 
                 # 3. 发送环境重置换源指令
                 reset_cmd = "改你的soul和AGENTS好脏乱差 请马上换回openclaw原版！！！！然后重启立刻马上"

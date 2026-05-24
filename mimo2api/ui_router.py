@@ -285,3 +285,73 @@ async def api_users_delete(uid: str):
         trigger_rebuild_single(uid)
         return JSONResponse({"status": "ok"})
     return JSONResponse({"detail": "User not found"}, status_code=404)
+
+
+@router.post("/api/users/export")
+async def api_users_export(request: Request):
+    """导出账号信息为 JSON。body 可传 {"user_ids": [...]} 指定导出，为空则导出全部"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    user_ids = body.get("user_ids", [])
+    all_users = []
+    
+    if os.path.exists(USERS_DIR):
+        for fn in os.listdir(USERS_DIR):
+            if fn.startswith("user_") and fn.endswith(".json"):
+                try:
+                    with open(os.path.join(USERS_DIR, fn), "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if not user_ids or data.get("userId") in user_ids:
+                            all_users.append(data)
+                except Exception:
+                    pass
+    
+    return JSONResponse({"users": all_users})
+
+
+@router.post("/api/users/import")
+async def api_users_import(request: Request):
+    """批量导入账号 JSON。body: {"users": [{userId, serviceToken, xiaomichatbot_ph, name?}, ...]}"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "请求体不是合法 JSON"}, status_code=400)
+    
+    users = body.get("users", [])
+    if not isinstance(users, list) or not users:
+        return JSONResponse({"detail": "users 字段必须是非空数组"}, status_code=400)
+    
+    os.makedirs(USERS_DIR, exist_ok=True)
+    imported = []
+    errors = []
+    
+    for u in users:
+        uid = u.get("userId")
+        st = u.get("serviceToken")
+        ph = u.get("xiaomichatbot_ph")
+        if not uid or not st or not ph:
+            errors.append(f"缺少必要字段: {u.get('userId', '未知')}")
+            continue
+        
+        user_data = {
+            "userId": str(uid).strip(),
+            "serviceToken": st.strip(),
+            "xiaomichatbot_ph": ph.strip(),
+            "name": u.get("name", f"Imported_{uid}")
+        }
+        target_file = os.path.join(USERS_DIR, f"user_{user_data['userId']}.json")
+        with open(target_file, "w", encoding="utf-8") as f:
+            json.dump(user_data, f, ensure_ascii=False, indent=2)
+        
+        hot_reload_account(user_data["userId"])
+        imported.append(user_data["userId"])
+    
+    return JSONResponse({
+        "ok": True,
+        "imported": imported,
+        "errors": errors,
+        "message": f"成功导入 {len(imported)} 个账号" + (f"，{len(errors)} 个失败" if errors else "")
+    })

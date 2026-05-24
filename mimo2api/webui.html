@@ -404,6 +404,15 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                         重建勾选
                     </button>
+                    <button class="btn btn-outline" onclick="exportUsers()" style="font-size:13px;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                        导出
+                    </button>
+                    <button class="btn btn-outline" onclick="document.getElementById('importFileInput').click()" style="font-size:13px;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        导入JSON
+                    </button>
+                    <input type="file" id="importFileInput" accept=".json" style="display:none;" onchange="importUsersFile(event)">
                     <button class="btn" onclick="openModal()">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         导入凭证
@@ -475,6 +484,12 @@
                 <button class="btn btn-outline" onclick="testProxy()" style="font-size:13px;">测试</button>
             </div>
             <div id="proxyStatus" style="margin-top: 4px; font-size: 12px; color: var(--text-muted); padding-left: 50px;"></div>
+            <div style="display:flex; gap:10px; align-items:center; padding-top:12px; margin-top:12px; border-top:1px solid #E5E7EB;">
+                <label style="font-size:13px; color:var(--text-muted); white-space:nowrap;">并发创建上限</label>
+                <input type="number" id="concurrencyInput" min="1" max="50" value="2" style="width:60px; padding:7px 10px; border:1px solid #D1D5DB; border-radius:6px; font-size:13px; text-align:center;">
+                <button class="btn" onclick="saveConcurrency()" style="font-size:13px;">应用</button>
+                <span style="font-size:12px; color:var(--text-muted);">同时创建 Claw 实例的最大数量，防止 429 限流</span>
+            </div>
             <div id="settingsStatus" style="font-size:12px; color:var(--text-muted); margin-top:4px;"></div>
         </div>
 
@@ -832,6 +847,81 @@
             }
         }
 
+        async function loadConcurrency() {
+            try {
+                const res = await apiFetch('/api/concurrency');
+                const data = await res.json();
+                document.getElementById('concurrencyInput').value = data.max_concurrent_creates || 2;
+            } catch(e) {
+                if (e.message !== 'UNAUTHORIZED') console.error("加载并发设置失败", e);
+            }
+        }
+
+        async function saveConcurrency() {
+            const value = parseInt(document.getElementById('concurrencyInput').value) || 2;
+            try {
+                const res = await apiFetch('/api/concurrency', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ max_concurrent_creates: value })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    showToast(`并发上限已设为 ${data.max_concurrent_creates}`, 'success');
+                }
+            } catch(e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('保存失败: ' + e.message, 'error');
+            }
+        }
+
+        async function exportUsers() {
+            const checked = [...document.querySelectorAll('.user-checkbox:checked')].map(cb => cb.value);
+            try {
+                const res = await apiFetch('/api/users/export', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ user_ids: checked })
+                });
+                const data = await res.json();
+                const blob = new Blob([JSON.stringify(data.users, null, 2)], {type: 'application/json'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `mimo_accounts_${new Date().toISOString().slice(0,10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                showToast(`已导出 ${data.users.length} 个账号`, 'success');
+            } catch(e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('导出失败: ' + e.message, 'error');
+            }
+        }
+
+        async function importUsersFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                let users = JSON.parse(text);
+                // 兼容两种格式：直接数组 或 {users: [...]}
+                if (users.users) users = users.users;
+                if (!Array.isArray(users)) { showToast('JSON 格式错误，需要数组', 'error'); return; }
+
+                if (!confirm(`即将导入 ${users.length} 个账号，确定继续？`)) return;
+
+                const res = await apiFetch('/api/users/import', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ users })
+                });
+                const data = await res.json();
+                showToast(data.message, data.ok ? 'success' : 'error');
+                fetchUsers();
+            } catch(e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('导入失败: ' + e.message, 'error');
+            }
+            event.target.value = '';
+        }
+
         async function saveSettings() {
             const username = document.getElementById('settingsUsername').value.trim();
             const password = document.getElementById('settingsPassword').value;
@@ -991,7 +1081,7 @@
         }
 
         async function initializeDashboard() {
-            await Promise.all([fetchStatus(), fetchUsers(), loadProxy(), loadSettings()]);
+            await Promise.all([fetchStatus(), fetchUsers(), loadProxy(), loadSettings(), loadConcurrency()]);
             startStatusPolling();
         }
 

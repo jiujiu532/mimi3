@@ -27,7 +27,7 @@ except ImportError:
 MODEL_MAPPING_FILE = Path(__file__).parent.parent / "model_mapping.json"
 
 # 引入 Manager 长驻协程任务
-from .manager import start_manager_tasks, trigger_rebuild, trigger_rebuild_single, hot_reload_account, get_proxy_url, set_proxy_url
+from .manager import start_manager_tasks, trigger_rebuild, trigger_rebuild_single, hot_reload_account, get_proxy_url, set_proxy_url, get_max_concurrent_creates, set_max_concurrent_creates
 
 # Responses API 转换器
 from .responses_converter import convert_request as responses_convert_request
@@ -416,6 +416,22 @@ async def api_test_proxy(request: Request):
             return JSONResponse(content={"ok": True, "status_code": r.status_code, "message": f"连通成功 (HTTP {r.status_code})"})
     except Exception as e:
         return JSONResponse(content={"ok": False, "error": str(e)})
+
+@app.get("/api/concurrency")
+async def api_get_concurrency():
+    return JSONResponse(content={"max_concurrent_creates": get_max_concurrent_creates()})
+
+@app.put("/api/concurrency")
+async def api_set_concurrency(request: Request):
+    body = await request.body()
+    try:
+        data = json.loads(body.decode("utf-8", "ignore"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    value = int(data.get("max_concurrent_creates", 2))
+    set_max_concurrent_creates(value)
+    _persist_env_var("MIMO_MAX_CONCURRENT_CREATES", str(get_max_concurrent_creates()))
+    return JSONResponse(content={"ok": True, "max_concurrent_creates": get_max_concurrent_creates()})
 
 def load_model_mapping() -> dict[str, str]:
     if not MODEL_MAPPING_FILE.exists():
