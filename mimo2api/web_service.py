@@ -243,6 +243,27 @@ DEFAULT_GATEWAY_ERROR = "Gateway Error: 所有节点请求失败"
 NODE_401_COOLDOWN_SECONDS = int(os.getenv("MIMO_NODE_401_COOLDOWN_SECONDS", "900"))
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROCESS_LOCK_PATH = os.getenv("MIMO_PROCESS_LOCK_PATH", os.path.join(ROOT_DIR, "mimo2api.lock"))
+ENV_FILE_PATH = os.path.join(ROOT_DIR, ".env")
+
+
+def _persist_env_var(key: str, value: str) -> None:
+    """将环境变量持久化写入 .env 文件"""
+    lines = []
+    found = False
+    if os.path.exists(ENV_FILE_PATH):
+        with open(ENV_FILE_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith(f"{key}="):
+                    if value:
+                        lines.append(f"{key}={value}\n")
+                    # 值为空则删除该行
+                    found = True
+                else:
+                    lines.append(line)
+    if not found and value:
+        lines.append(f"{key}={value}\n")
+    with open(ENV_FILE_PATH, "w", encoding="utf-8") as f:
+        f.writelines(lines)
 
 # 后台 fire-and-forget 任务集合
 _background_tasks: set[asyncio.Task] = set()
@@ -373,6 +394,8 @@ async def api_set_proxy(request: Request):
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
     url = data.get("proxy_url", "")
     set_proxy_url(url)
+    # 持久化到 .env 文件，重启后自动加载
+    _persist_env_var("MIMO_PROXY_URL", url)
     return JSONResponse(content={"ok": True, "proxy_url": get_proxy_url()})
 
 @app.post("/api/proxy/test")
