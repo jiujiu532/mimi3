@@ -603,7 +603,14 @@ class AccountManager:
                             continue  # 回到循环顶部，会被 expired 检查拦住
                         self.logger.error("全流程首次建联连结都失败，可能由于服务封禁/账户死亡。")
                         await client.close()
-                        await asyncio.sleep(60)  # 429 退避等待
+                        # 429 退避：等待 5 分钟再重试，避免反复撞限流
+                        self.logger.info("等待 300 秒后重试创建...")
+                        await interruptible_sleep(300, self.uid)
+                        if rebuild_event.is_set():
+                            rebuild_event.clear()
+                        account_evt = _account_rebuild_events.get(self.uid)
+                        if account_evt and account_evt.is_set():
+                            account_evt.clear()
                         continue
                 
                 # 3. 发送环境重置换源指令
